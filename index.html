@@ -87,6 +87,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 .card.src{outline:3px solid var(--accent);outline-offset:2px}
 #vp.connecting .card:not(.src):hover{outline:3px dashed var(--accent);outline-offset:2px;cursor:crosshair}
 
+.card.sel{outline:3px solid var(--accent);outline-offset:2px}
+#selbox{position:absolute;display:none;border:1.5px dashed var(--accent);background:rgba(47,111,235,.10);border-radius:4px;pointer-events:none;z-index:5}
 #hint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:var(--bg);
   padding:8px 14px;border-radius:999px;font-size:13px;z-index:20;display:none;max-width:calc(100% - 32px);text-align:center}
 #hint.show{display:block}
@@ -125,6 +127,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 
 <div id="vp">
   <div id="world"><svg id="links"></svg></div>
+  <div id="selbox"></div>
 </div>
 <div id="hint"></div>
 <div id="status"><span class="dot"></span><span class="txt">Lade…</span></div>
@@ -145,7 +148,11 @@ const clean=o=>JSON.parse(JSON.stringify(o));
 const S={cards:[],links:[]};
 const EL=new Map();
 let V=loadLS(KEY+':view')||{x:40,y:40,z:1}, HID=loadLS(KEY+':hidden')||{};
-let FB=null, connectFrom=null, zTop=1, dragging=null;
+let FB=null, connectFrom=null, zTop=1;
+const DRAG=new Set(), SEL=new Set();
+const isMulti=e=>e.ctrlKey||e.metaKey;
+function setSel(id,on){on?SEL.add(id):SEL.delete(id);EL.get(id)?.classList.toggle('sel',on)}
+function clearSel(){[...SEL].forEach(id=>setSel(id,false))}
 document.getElementById('boardLbl').textContent='Board: '+BOARD;
 
 /* ---------- Speicher ---------- */
@@ -187,7 +194,7 @@ function seedData(){
   const c1={id:uid(),type:'checkpoint',x:80,y:390,title:'Feedback von 5 Testern',body:'',done:false};
   const i1={id:uid(),type:'idee',x:540,y:420,title:'Offline-Modus?',body:'Später prüfen'};
   const n1={id:uid(),type:'notiz',x:900,y:110,title:'So funktioniert’s',
-    body:'• Oben Karten hinzufügen\n• Am Kopf einer Karte ziehen\n• ⤳ verbindet Karten (z. B. Schritt → Ziel)\n• Abgehakte Schritte füllen den Fortschritt des Ziels\n• Doppelklick auf freie Fläche = neue Notiz\n• Freie Fläche ziehen = verschieben\n• Strg/⌘ + Mausrad = Zoom\n• Linie anklicken = Verbindung löschen\n• Rechtsklick auf Typ-Button = ein-/ausblenden\n• 🔗 Teilen kopiert den Link – alle sehen Änderungen live'};
+    body:'• Oben Karten hinzufügen\n• Am Kopf einer Karte ziehen\n• ⤳ verbindet Karten (z. B. Schritt → Ziel)\n• Abgehakte Schritte füllen den Fortschritt des Ziels\n• Doppelklick auf freie Fläche = neue Notiz\n• Freie Fläche ziehen = verschieben\n• Strg/⌘ + Mausrad = Zoom\n• Strg/⌘ + Ziehen auf freier Fläche = mehrere Karten markieren, dann gemeinsam verschieben\n• Linie anklicken = Verbindung löschen\n• Rechtsklick auf Typ-Button = ein-/ausblenden\n• 🔗 Teilen kopiert den Link – alle sehen Änderungen live'};
   return {cards:[g,s1,s2,c1,i1,n1],
     links:[{id:uid(),from:s1.id,to:g.id},{id:uid(),from:s2.id,to:g.id},{id:uid(),from:c1.id,to:g.id},{id:uid(),from:i1.id,to:g.id}]};
 }
@@ -220,7 +227,7 @@ function fitAll(){
 const card=id=>S.cards.find(c=>c.id===id);
 function mountAll(){EL.forEach(e=>e.remove());EL.clear();S.cards.forEach(mount);applyView();refresh()}
 function mount(c){const el=cardEl(c);EL.set(c.id,el);world.appendChild(el)}
-function unmount(id){EL.get(id)?.remove();EL.delete(id)}
+function unmount(id){EL.get(id)?.remove();EL.delete(id);SEL.delete(id)}
 function refresh(){updateProgress();drawLinks();updateCounts()}
 function syncEl(c){
   const el=EL.get(c.id); if(!el)return mount(c);
@@ -265,8 +272,12 @@ function cardEl(c){
   el.addEventListener('pointerdown',e=>{
     el.style.zIndex=++zTop;
     if(connectFrom&&connectFrom!==c.id){e.preventDefault();e.stopPropagation();addLink(connectFrom,c.id);return}
-    if(!e.target.closest('.head')||e.target.closest('button,input,label'))return;
-    e.preventDefault(); dragCard(e,c,el);
+    if(e.target.closest('button,input,label'))return;
+    if(isMulti(e)&&e.button===0){e.preventDefault();e.stopPropagation();setSel(c.id,!SEL.has(c.id));return}
+    if(!e.target.closest('.head'))return;
+    e.preventDefault();
+    if(!SEL.has(c.id))clearSel();
+    dragCards(e,SEL.size>1?[...SEL].map(card).filter(Boolean):[c],el);
   });
   return el;
 }
@@ -278,11 +289,14 @@ function addCard(type,pos){
   S.cards.push(c); mount(c); refresh(); persistCard(c,0);
   const el=EL.get(c.id); el.style.zIndex=++zTop; el.querySelector('.title').focus();
 }
-function dragCard(e,c,el){
-  const sx=e.clientX,sy=e.clientY,ox=c.x,oy=c.y; el.setPointerCapture(e.pointerId); dragging=c.id;
-  const mv=ev=>{c.x=Math.round(ox+(ev.clientX-sx)/V.z);c.y=Math.round(oy+(ev.clientY-sy)/V.z);el.style.left=c.x+'px';el.style.top=c.y+'px';drawLinks()};
+function dragCards(e,list,el){
+  const sx=e.clientX,sy=e.clientY,o=list.map(c=>({c,x:c.x,y:c.y,el:EL.get(c.id)}));
+  el.setPointerCapture(e.pointerId); list.forEach(c=>DRAG.add(c.id));
+  const mv=ev=>{const dx=(ev.clientX-sx)/V.z,dy=(ev.clientY-sy)/V.z;
+    for(const it of o){it.c.x=Math.round(it.x+dx);it.c.y=Math.round(it.y+dy);if(it.el){it.el.style.left=it.c.x+'px';it.el.style.top=it.c.y+'px'}}
+    drawLinks()};
   const up=()=>{el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up);
-    dragging=null; if(c.x!==ox||c.y!==oy)persistCard(c,0)};
+    for(const it of o){DRAG.delete(it.c.id);if(it.c.x!==it.x||it.c.y!==it.y)persistCard(it.c,0)}};
   el.addEventListener('pointermove',mv);el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
 }
 
@@ -346,6 +360,8 @@ vp.addEventListener('pointerdown',e=>{
   if(!isBg(e.target))return;
   if(connectFrom){stopConnect();return}
   if(document.activeElement&&document.activeElement.isContentEditable)document.activeElement.blur();
+  if(isMulti(e)&&e.button===0&&!ptrs.size){e.preventDefault();startMarquee(e);return}
+  if(!ptrs.size)clearSel();
   vp.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size===1){pan={sx:e.clientX,sy:e.clientY,vx:V.x,vy:V.y};vp.classList.add('panning')}
   if(ptrs.size===2){pan=null;const [p,q]=[...ptrs.values()];pinch={d:Math.hypot(p.x-q.x,p.y-q.y),z:V.z}}
@@ -368,7 +384,28 @@ vp.addEventListener('dblclick',e=>{
   if(!isBg(e.target))return; const r=vp.getBoundingClientRect(),w=toWorld(e.clientX-r.left,e.clientY-r.top);
   addCard('notiz',{x:w.x-115,y:w.y-30});
 });
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&connectFrom)stopConnect()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(connectFrom)stopConnect();clearSel()}});
+const selbox=document.getElementById('selbox');
+vp.addEventListener('contextmenu',e=>{if(e.ctrlKey)e.preventDefault()});
+function startMarquee(e){
+  const r=vp.getBoundingClientRect(), sx=e.clientX-r.left, sy=e.clientY-r.top, before=new Set(SEL);
+  vp.setPointerCapture(e.pointerId);
+  const box=ev=>{const x=ev.clientX-r.left,y=ev.clientY-r.top;return{x1:Math.min(sx,x),y1:Math.min(sy,y),x2:Math.max(sx,x),y2:Math.max(sy,y)}};
+  const mv=ev=>{
+    const b=box(ev);
+    Object.assign(selbox.style,{display:'block',left:b.x1+'px',top:b.y1+'px',width:(b.x2-b.x1)+'px',height:(b.y2-b.y1)+'px'});
+    const w1=toWorld(b.x1,b.y1),w2=toWorld(b.x2,b.y2);
+    for(const c of S.cards){
+      const el=EL.get(c.id); if(!el||el.classList.contains('hidden'))continue;
+      const hit=c.x<w2.x&&c.x+el.offsetWidth>w1.x&&c.y<w2.y&&c.y+el.offsetHeight>w1.y;
+      setSel(c.id,hit||before.has(c.id));
+    }
+  };
+  const up=()=>{vp.removeEventListener('pointermove',mv);vp.removeEventListener('pointerup',up);vp.removeEventListener('pointercancel',up);
+    selbox.style.display='none';
+    if(SEL.size)showHint(SEL.size+' Karte(n) markiert – am Kopf ziehen zum Verschieben · Esc hebt auf'),setTimeout(()=>showHint(''),2500)};
+  vp.addEventListener('pointermove',mv);vp.addEventListener('pointerup',up);vp.addEventListener('pointercancel',up);
+}
 
 /* ---------- Toolbar ---------- */
 document.querySelectorAll('.add').forEach(b=>{
@@ -431,7 +468,7 @@ async function startCloud(){
   const upsert=snap=>{
     const id=snap.key, d=snap.val()||{}, c=card(id);
     if(!c){const n={...d,id};S.cards.push(n);mount(n);return refresh()}
-    if(timers[id]||dragging===id)return;
+    if(timers[id]||DRAG.has(id))return;
     for(const k of Object.keys(c))if(k!=='id'&&!(k in d))delete c[k];
     Object.assign(c,d,{id}); syncEl(c); refresh();
   };

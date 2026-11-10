@@ -21,6 +21,7 @@ Ein browserbasiertes Whiteboard, um gemeinsam die Entwicklung unserer App zu pla
 - Abgehakte Schritte und Checkpoints, die mit einem Ziel verbunden sind, füllen dessen Fortschrittsbalken
 - Doppelklick auf freie Fläche → neue Notiz
 - Freie Fläche ziehen → verschieben · Strg/⌘ + Mausrad oder Pinch → Zoom
+- **Strg/⌘ gedrückt + Ziehen** auf freier Fläche → mehrere Karten markieren · Strg/⌘ + Klick auf eine Karte → zur Auswahl hinzufügen/entfernen · markierte Karten am Kopf ziehen → alle gemeinsam verschieben · Esc oder Klick auf freie Fläche → Auswahl aufheben
 - Rechtsklick auf einen Typ-Button → diesen Typ ein-/ausblenden
 - **🔗 Teilen** kopiert den Link zum aktuellen Board, **🗂 Board** öffnet ein anderes oder legt ein neues an (`?board=name`)
 - **Export/Import** als JSON zum Sichern
