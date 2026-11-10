@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideen-Whiteboard</title>
+<style>
+:root{
+  --bg:#f4f1ea; --dot:#d6d0c3; --ink:#1f2328; --muted:#6b6f76; --panel:#ffffff; --panel-b:#e4e0d8;
+  --line:#8a8f98; --ok:#3f9d5c; --accent:#2f6feb;
+  --shadow:0 1px 2px rgba(0,0,0,.08),0 6px 16px rgba(0,0,0,.07);
+  --idee:#fff3b0; --idee-b:#d9b52c;
+  --ziel:#ffdcd6; --ziel-b:#d9574a;
+  --schritt:#d8f3dc; --schritt-b:#3f9d5c;
+  --checkpoint:#d6ebff; --checkpoint-b:#3b82d6;
+  --notiz:#ededed; --notiz-b:#8e949b;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#17191c; --dot:#2c3036; --ink:#e8eaed; --muted:#9aa0a6; --panel:#202327; --panel-b:#33373d;
+    --line:#7d838c; --ok:#5cc27b; --accent:#6aa0ff;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 16px rgba(0,0,0,.35);
+    --idee:#4a4119; --idee-b:#d9b52c;
+    --ziel:#4d2622; --ziel-b:#e86c5f;
+    --schritt:#1f3d27; --schritt-b:#5cc27b;
+    --checkpoint:#1d3550; --checkpoint-b:#5c9ee8;
+    --notiz:#2e3135; --notiz-b:#8e949b;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button{font:inherit;color:inherit;cursor:pointer}
+
+/* Toolbar */
+#bar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:6px;padding:8px 16px;
+  background:var(--panel);border-bottom:1px solid var(--panel-b);overflow-x:auto;white-space:nowrap}
+#bar h1{font-size:15px;margin:0 8px 0 0;font-weight:650}
+.btn{border:1px solid var(--panel-b);background:var(--panel);border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:6px;flex:none}
+.btn:hover{border-color:var(--line)}
+.add{border-left:4px solid var(--c)}
+.add[data-t="idee"]{--c:var(--idee-b)} .add[data-t="ziel"]{--c:var(--ziel-b)} .add[data-t="schritt"]{--c:var(--schritt-b)}
+.add[data-t="checkpoint"]{--c:var(--checkpoint-b)} .add[data-t="notiz"]{--c:var(--notiz-b)}
+.add.off{opacity:.45}
+.add .n{font-size:11px;color:var(--muted);min-width:1ch}
+.sep{width:1px;height:22px;background:var(--panel-b);margin:0 4px;flex:none}
+.sp{flex:1}
+#zoomLbl{min-width:44px;text-align:center;color:var(--muted);flex:none}
+
+/* Board */
+#vp{position:fixed;inset:0;top:49px;overflow:hidden;touch-action:none;cursor:grab;
+  background-image:radial-gradient(var(--dot) 1.2px,transparent 1.4px)}
+#vp.panning{cursor:grabbing}
+#vp.connecting{cursor:crosshair}
+#world{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+#links{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible}
+.lk .ln{stroke:var(--line);stroke-width:2;fill:none}
+.lk.ok .ln{stroke:var(--ok)}
+.lk .hit{stroke:transparent;stroke-width:14;fill:none;cursor:pointer}
+.lk:hover .ln{stroke:var(--accent)}
+
+/* Cards */
+.card{position:absolute;width:230px;background:var(--cbg);border:1px solid var(--cb);border-top:5px solid var(--cb);
+  border-radius:10px;box-shadow:var(--shadow);cursor:default}
+.card.hidden{display:none}
+.t-idee{--cbg:var(--idee);--cb:var(--idee-b)} .t-ziel{--cbg:var(--ziel);--cb:var(--ziel-b)}
+.t-schritt{--cbg:var(--schritt);--cb:var(--schritt-b)} .t-checkpoint{--cbg:var(--checkpoint);--cb:var(--checkpoint-b)}
+.t-notiz{--cbg:var(--notiz);--cb:var(--notiz-b)}
+.t-ziel{width:260px}
+.head{display:flex;align-items:center;gap:4px;padding:6px 6px 2px 10px;cursor:grab;touch-action:none;user-select:none}
+.tag{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.head .sp{flex:1;align-self:stretch}
+.ic{border:0;background:transparent;border-radius:6px;width:26px;height:26px;opacity:.55;font-size:14px}
+.ic:hover{opacity:1;background:rgba(127,127,127,.15)}
+.chk{display:inline-flex;align-items:center;margin-left:4px;cursor:pointer}
+.chk input{width:16px;height:16px;cursor:pointer;accent-color:var(--ok)}
+.title,.body{outline:none;padding:0 10px;word-wrap:break-word;white-space:pre-wrap}
+.title{font-weight:650;font-size:15px;padding-top:2px}
+.body{color:var(--ink);opacity:.85;padding-bottom:10px;padding-top:4px;min-height:22px}
+.title:empty:before,.body:empty:before{content:attr(data-ph);color:var(--muted);opacity:.7}
+.title:focus,.body:focus{background:rgba(127,127,127,.08)}
+.done .title{text-decoration:line-through;opacity:.6}
+.prog{display:flex;align-items:center;gap:8px;padding:0 10px 10px}
+.bar{flex:1;height:7px;border-radius:4px;background:rgba(127,127,127,.25);overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--ok);transition:width .25s}
+.pt{font-size:12px;color:var(--muted);min-width:60px;text-align:right}
+.card.src{outline:3px solid var(--accent);outline-offset:2px}
+#vp.connecting .card:not(.src):hover{outline:3px dashed var(--accent);outline-offset:2px;cursor:crosshair}
+
+#hint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:var(--bg);
+  padding:8px 14px;border-radius:999px;font-size:13px;z-index:20;display:none;max-width:calc(100% - 32px);text-align:center}
+#hint.show{display:block}
+#status{position:fixed;right:16px;bottom:12px;color:var(--muted);font-size:12px;z-index:5}
+</style>
+</head>
+<body>
+<div id="bar">
+  <h1>🧭 Whiteboard</h1>
+  <button class="btn add" data-t="idee" title="Idee hinzufügen (Rechtsklick: ein-/ausblenden)">💡 Idee <span class="n"></span></button>
+  <button class="btn add" data-t="ziel" title="Ziel hinzufügen (Rechtsklick: ein-/ausblenden)">🎯 Ziel <span class="n"></span></button>
+  <button class="btn add" data-t="schritt" title="Schritt hinzufügen (Rechtsklick: ein-/ausblenden)">➜ Schritt <span class="n"></span></button>
+  <button class="btn add" data-t="checkpoint" title="Checkpoint hinzufügen (Rechtsklick: ein-/ausblenden)">🚩 Checkpoint <span class="n"></span></button>
+  <button class="btn add" data-t="notiz" title="Notiz hinzufügen (Rechtsklick: ein-/ausblenden)">📝 Notiz <span class="n"></span></button>
+  <span class="sep"></span>
+  <button class="btn" id="zOut" title="Verkleinern">−</button>
+  <span id="zoomLbl">100%</span>
+  <button class="btn" id="zIn" title="Vergrößern">+</button>
+  <button class="btn" id="fit" title="Alles anzeigen">⤢ Alles</button>
+  <span class="sp"></span>
+  <button class="btn" id="exp" title="Board als JSON-Datei sichern">⬇ Export</button>
+  <button class="btn" id="imp" title="Board aus JSON-Datei laden">⬆ Import</button>
+  <button class="btn" id="clr" title="Board leeren">🗑</button>
+  <input type="file" id="file" accept="application/json,.json" hidden>
+</div>
+
+<div id="vp">
+  <div id="world"><svg id="links"></svg></div>
+</div>
+<div id="hint"></div>
+<div id="status"></div>
+
+<script>
+const TYPES={
+  idee:{label:'Idee',icon:'💡'},
+  ziel:{label:'Ziel',icon:'🎯'},
+  schritt:{label:'Schritt',icon:'➜'},
+  checkpoint:{label:'Checkpoint',icon:'🚩'},
+  notiz:{label:'Notiz',icon:'📝'}
+};
+const CHECKABLE=t=>t==='schritt'||t==='checkpoint';
+const KEY='whiteboard-v1';
+const vp=document.getElementById('vp'), world=document.getElementById('world'), svg=document.getElementById('links');
+const hintEl=document.getElementById('hint'), statusEl=document.getElementById('status');
+const uid=()=>Math.random().toString(36).slice(2,10);
+let S=load()||seed();
+S.hidden=S.hidden||{}; S.view=S.view||{x:40,y:40,z:1};
+let connectFrom=null, zTop=1;
+
+/* ---------- Speichern ---------- */
+function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){return null}}
+let saveT;
+function save(){
+  clearTimeout(saveT);
+  saveT=setTimeout(()=>{
+    try{localStorage.setItem(KEY,JSON.stringify(S));statusEl.textContent='Automatisch gespeichert'}
+    catch(e){statusEl.textContent='Speichern nicht möglich – bitte exportieren'}
+  },300);
+}
+function seed(){
+  const g={id:uid(),type:'ziel',x:520,y:150,title:'Erste App-Version veröffentlichen',body:'Was soll die App am Ende können?'};
+  const s1={id:uid(),type:'schritt',x:80,y:40,title:'Kernfunktionen festlegen',body:'Welche 3 Features sind ein Muss?',done:true};
+  const s2={id:uid(),type:'schritt',x:80,y:220,title:'Klickbaren Prototyp bauen',body:''};
+  const c1={id:uid(),type:'checkpoint',x:80,y:390,title:'Feedback von 5 Testern',body:''};
+  const i1={id:uid(),type:'idee',x:540,y:420,title:'Offline-Modus?',body:'Später prüfen'};
+  const n1={id:uid(),type:'notiz',x:900,y:110,title:'So funktioniert’s',
+    body:'• Oben Karten hinzufügen\n• Am Kopf einer Karte ziehen\n• ⤳ verbindet Karten (z. B. Schritt → Ziel)\n• Abgehakte Schritte füllen den Fortschritt des Ziels\n• Doppelklick auf freie Fläche = neue Notiz\n• Freie Fläche ziehen = verschieben\n• Strg/⌘ + Mausrad = Zoom\n• Linie anklicken = Verbindung löschen\n• Rechtsklick auf Typ-Button = ein-/ausblenden'};
+  return {cards:[g,s1,s2,c1,i1,n1],
+    links:[{id:uid(),from:s1.id,to:g.id},{id:uid(),from:s2.id,to:g.id},{id:uid(),from:c1.id,to:g.id},{id:uid(),from:i1.id,to:g.id}],
+    view:{x:40,y:40,z:1},hidden:{}};
+}
+
+/* ---------- Ansicht ---------- */
+function applyView(){
+  const v=S.view;
+  world.style.transform=`translate(${v.x}px,${v.y}px) scale(${v.z})`;
+  vp.style.backgroundSize=`${24*v.z}px ${24*v.z}px`;
+  vp.style.backgroundPosition=`${v.x}px ${v.y}px`;
+  document.getElementById('zoomLbl').textContent=Math.round(v.z*100)+'%';
+}
+function zoomAt(px,py,nz){
+  const v=S.view; nz=Math.min(2.5,Math.max(.2,nz));
+  const wx=(px-v.x)/v.z, wy=(py-v.y)/v.z;
+  v.z=nz; v.x=px-wx*nz; v.y=py-wy*nz; applyView(); save();
+}
+function vpCenter(){const r=vp.getBoundingClientRect();return{x:r.width/2,y:r.height/2}}
+function toWorld(px,py){const v=S.view;return{x:(px-v.x)/v.z,y:(py-v.y)/v.z}}
+function fitAll(){
+  const els=[...world.querySelectorAll('.card:not(.hidden)')]; if(!els.length)return;
+  let x1=1e9,y1=1e9,x2=-1e9,y2=-1e9;
+  for(const e of els){const c=card(e.dataset.id);x1=Math.min(x1,c.x);y1=Math.min(y1,c.y);x2=Math.max(x2,c.x+e.offsetWidth);y2=Math.max(y2,c.y+e.offsetHeight)}
+  const r=vp.getBoundingClientRect(), pad=40;
+  const z=Math.min(1.5,Math.max(.2,Math.min((r.width-pad*2)/(x2-x1),(r.height-pad*2)/(y2-y1))));
+  S.view={z,x:(r.width-(x2-x1)*z)/2-x1*z,y:(r.height-(y2-y1)*z)/2-y1*z};
+  applyView(); save();
+}
+
+/* ---------- Karten ---------- */
+const card=id=>S.cards.find(c=>c.id===id);
+function render(){
+  world.querySelectorAll('.card').forEach(n=>n.remove());
+  for(const c of S.cards) world.appendChild(cardEl(c));
+  applyView(); updateProgress(); drawLinks(); updateCounts();
+}
+function cardEl(c){
+  const t=TYPES[c.type]||TYPES.notiz;
+  const el=document.createElement('div');
+  el.className=`card t-${c.type}${c.done?' done':''}${S.hidden[c.type]?' hidden':''}`;
+  el.dataset.id=c.id; el.style.left=c.x+'px'; el.style.top=c.y+'px';
+  el.innerHTML=`<div class="head"><span class="tag">${t.icon} ${t.label}</span>
+    ${CHECKABLE(c.type)?`<label class="chk" title="Erledigt"><input type="checkbox"${c.done?' checked':''}></label>`:''}
+    <span class="sp"></span>
+    <button class="ic link" title="Mit anderer Karte verbinden">⤳</button>
+    <button class="ic del" title="Karte löschen">✕</button></div>
+    <div class="title" contenteditable="true" data-ph="Titel…"></div>
+    <div class="body" contenteditable="true" data-ph="Beschreibung…"></div>
+    ${c.type==='ziel'?'<div class="prog"><div class="bar"><i></i></div><span class="pt"></span></div>':''}`;
+  const ti=el.querySelector('.title'), bo=el.querySelector('.body');
+  ti.textContent=c.title||''; bo.textContent=c.body||'';
+  for(const [node,key] of [[ti,'title'],[bo,'body']]){
+    node.addEventListener('input',()=>{c[key]=node.innerText;save();drawLinks()});
+    node.addEventListener('blur',()=>{if(!node.innerText.trim()){node.textContent='';c[key]=''}});
+    node.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData||window.clipboardData).getData('text'))});
+    node.addEventListener('keydown',e=>{if(e.key==='Escape')node.blur(); if(key==='title'&&e.key==='Enter'){e.preventDefault();bo.focus()}});
+  }
+  const cb=el.querySelector('.chk input');
+  if(cb) cb.addEventListener('change',()=>{c.done=cb.checked;el.classList.toggle('done',c.done);updateProgress();drawLinks();save()});
+  el.querySelector('.del').addEventListener('click',()=>{
+    if((c.title||c.body)&&!confirm(`„${c.title||t.label}“ löschen?`))return;
+    S.cards=S.cards.filter(x=>x.id!==c.id); S.links=S.links.filter(l=>l.from!==c.id&&l.to!==c.id);
+    if(connectFrom===c.id)stopConnect(); render(); save();
+  });
+  el.querySelector('.link').addEventListener('click',e=>{e.stopPropagation(); connectFrom===c.id?stopConnect():startConnect(c.id)});
+  el.addEventListener('pointerdown',e=>{
+    el.style.zIndex=++zTop;
+    if(connectFrom&&connectFrom!==c.id){e.preventDefault();e.stopPropagation();addLink(connectFrom,c.id);return}
+    if(!e.target.closest('.head')||e.target.closest('button,input,label'))return;
+    e.preventDefault(); dragCard(e,c,el);
+  });
+  return el;
+}
+function addCard(type,pos){
+  if(S.hidden[type]){S.hidden[type]=false}
+  if(!pos){const m=vpCenter(),w=toWorld(m.x,m.y);pos={x:w.x-115+(Math.random()*60-30),y:w.y-60+(Math.random()*60-30)}}
+  const c={id:uid(),type,x:Math.round(pos.x),y:Math.round(pos.y),title:'',body:''};
+  if(CHECKABLE(type))c.done=false;
+  S.cards.push(c); render(); save();
+  const el=world.querySelector(`[data-id="${c.id}"]`); el.style.zIndex=++zTop; el.querySelector('.title').focus();
+}
+function dragCard(e,c,el){
+  const sx=e.clientX,sy=e.clientY,ox=c.x,oy=c.y; el.setPointerCapture(e.pointerId);
+  const mv=ev=>{c.x=Math.round(ox+(ev.clientX-sx)/S.view.z);c.y=Math.round(oy+(ev.clientY-sy)/S.view.z);el.style.left=c.x+'px';el.style.top=c.y+'px';drawLinks()};
+  const up=()=>{el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up);save()};
+  el.addEventListener('pointermove',mv);el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
+}
+
+/* ---------- Verbindungen ---------- */
+function startConnect(id){
+  stopConnect(); connectFrom=id; vp.classList.add('connecting');
+  world.querySelector(`[data-id="${id}"]`)?.classList.add('src');
+  showHint('Jetzt die Zielkarte anklicken · Esc zum Abbrechen');
+}
+function stopConnect(){
+  connectFrom=null; vp.classList.remove('connecting');
+  world.querySelectorAll('.src').forEach(n=>n.classList.remove('src')); showHint('');
+}
+function addLink(a,b){
+  const exists=S.links.some(l=>(l.from===a&&l.to===b)||(l.from===b&&l.to===a));
+  if(!exists)S.links.push({id:uid(),from:a,to:b});
+  stopConnect(); updateProgress(); drawLinks(); save();
+}
+function edge(c,r,t){
+  const dx=t.x-c.x,dy=t.y-c.y; if(!dx&&!dy)return c;
+  const k=Math.min(dx?(r.w/2+4)/Math.abs(dx):Infinity,dy?(r.h/2+4)/Math.abs(dy):Infinity);
+  return{x:c.x+dx*k,y:c.y+dy*k};
+}
+function drawLinks(){
+  const els={}; world.querySelectorAll('.card').forEach(n=>els[n.dataset.id]=n);
+  let h=`<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--line)"/></marker>
+  <marker id="arOk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--ok)"/></marker></defs>`;
+  for(const l of S.links){
+    const a=card(l.from),b=card(l.to),ea=els[l.from],eb=els[l.to];
+    if(!a||!b||!ea||!eb||ea.classList.contains('hidden')||eb.classList.contains('hidden'))continue;
+    const ra={w:ea.offsetWidth,h:ea.offsetHeight},rb={w:eb.offsetWidth,h:eb.offsetHeight};
+    const ca={x:a.x+ra.w/2,y:a.y+ra.h/2},cb={x:b.x+rb.w/2,y:b.y+rb.h/2};
+    const p1=edge(ca,ra,cb),p2=edge(cb,rb,ca);
+    const ok=CHECKABLE(a.type)&&a.done, d=`M${p1.x.toFixed(1)},${p1.y.toFixed(1)}L${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+    h+=`<g class="lk${ok?' ok':''}" data-id="${l.id}"><path class="hit" d="${d}"/><path class="ln" d="${d}" marker-end="url(#${ok?'arOk':'ar'})"/></g>`;
+  }
+  svg.innerHTML=h;
+}
+svg.addEventListener('pointerdown',e=>{
+  const g=e.target.closest('.lk'); if(!g)return; e.stopPropagation();
+  if(confirm('Verbindung löschen?')){S.links=S.links.filter(l=>l.id!==g.dataset.id);updateProgress();drawLinks();save()}
+});
+function updateProgress(){
+  for(const c of S.cards){
+    if(c.type!=='ziel')continue;
+    const el=world.querySelector(`[data-id="${c.id}"]`); if(!el)continue;
+    const src=S.links.filter(l=>l.to===c.id).map(l=>card(l.from)).filter(x=>x&&CHECKABLE(x.type));
+    const done=src.filter(x=>x.done).length, pct=src.length?Math.round(done/src.length*100):0;
+    el.querySelector('.bar i').style.width=pct+'%';
+    el.querySelector('.pt').textContent=src.length?`${done}/${src.length} erledigt`:'keine Schritte';
+  }
+}
+function updateCounts(){
+  document.querySelectorAll('.add').forEach(b=>{
+    const t=b.dataset.t; b.querySelector('.n').textContent=S.cards.filter(c=>c.type===t).length||'';
+    b.classList.toggle('off',!!S.hidden[t]);
+  });
+}
+function showHint(t){hintEl.textContent=t;hintEl.classList.toggle('show',!!t)}
+
+/* ---------- Verschieben & Zoomen ---------- */
+const ptrs=new Map(); let pan=null, pinch=null;
+const isBg=t=>t===vp||t===world||t===svg;
+vp.addEventListener('pointerdown',e=>{
+  if(!isBg(e.target))return;
+  if(connectFrom){stopConnect();return}
+  if(document.activeElement&&document.activeElement.isContentEditable)document.activeElement.blur();
+  vp.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===1){pan={sx:e.clientX,sy:e.clientY,vx:S.view.x,vy:S.view.y};vp.classList.add('panning')}
+  if(ptrs.size===2){pan=null;const [p,q]=[...ptrs.values()];pinch={d:Math.hypot(p.x-q.x,p.y-q.y),z:S.view.z}}
+});
+vp.addEventListener('pointermove',e=>{
+  if(!ptrs.has(e.pointerId))return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch&&ptrs.size===2){
+    const [p,q]=[...ptrs.values()],r=vp.getBoundingClientRect();
+    zoomAt((p.x+q.x)/2-r.left,(p.y+q.y)/2-r.top,pinch.z*Math.hypot(p.x-q.x,p.y-q.y)/pinch.d);
+  }else if(pan){S.view.x=pan.vx+e.clientX-pan.sx;S.view.y=pan.vy+e.clientY-pan.sy;applyView()}
+});
+const endPtr=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=null;if(!ptrs.size){if(pan)save();pan=null;vp.classList.remove('panning')}};
+vp.addEventListener('pointerup',endPtr);vp.addEventListener('pointercancel',endPtr);
+vp.addEventListener('wheel',e=>{
+  e.preventDefault(); const r=vp.getBoundingClientRect();
+  if(e.ctrlKey||e.metaKey)zoomAt(e.clientX-r.left,e.clientY-r.top,S.view.z*Math.exp(-e.deltaY*.0025));
+  else{S.view.x-=e.deltaX;S.view.y-=e.deltaY;applyView();save()}
+},{passive:false});
+vp.addEventListener('dblclick',e=>{
+  if(!isBg(e.target))return; const r=vp.getBoundingClientRect(),w=toWorld(e.clientX-r.left,e.clientY-r.top);
+  addCard('notiz',{x:w.x-115,y:w.y-30});
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&connectFrom)stopConnect()});
+
+/* ---------- Toolbar ---------- */
+document.querySelectorAll('.add').forEach(b=>{
+  b.addEventListener('click',()=>addCard(b.dataset.t));
+  b.addEventListener('contextmenu',e=>{e.preventDefault();const t=b.dataset.t;S.hidden[t]=!S.hidden[t];render();save()});
+});
+document.getElementById('zIn').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,S.view.z*1.2)};
+document.getElementById('zOut').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,S.view.z/1.2)};
+document.getElementById('fit').onclick=fitAll;
+document.getElementById('exp').onclick=()=>{
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,2)],{type:'application/json'}));
+  a.download=`whiteboard-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href);
+};
+const fileIn=document.getElementById('file');
+document.getElementById('imp').onclick=()=>fileIn.click();
+fileIn.onchange=async()=>{
+  const f=fileIn.files[0]; fileIn.value=''; if(!f)return;
+  try{
+    const d=JSON.parse(await f.text());
+    if(!Array.isArray(d.cards)||!Array.isArray(d.links))throw 0;
+    if(!confirm('Aktuelles Board durch die importierte Datei ersetzen?'))return;
+    S={cards:d.cards,links:d.links,view:d.view||{x:40,y:40,z:1},hidden:d.hidden||{}}; render(); save(); fitAll();
+  }catch(e){alert('Die Datei ist kein gültiger Whiteboard-Export.')}
+};
+document.getElementById('clr').onclick=()=>{
+  if(!confirm('Wirklich alle Karten löschen? (Tipp: vorher exportieren)'))return;
+  S={cards:[],links:[],view:{x:40,y:40,z:1},hidden:{}}; render(); save();
+};
+window.addEventListener('resize',drawLinks);
+
+render();
+</script>
+</body>
+</html>
