@@ -92,10 +92,18 @@ button{font:inherit;color:inherit;cursor:pointer}
 #hint.show{display:block}
 #status{position:fixed;right:16px;bottom:12px;color:var(--muted);font-size:12px;z-index:5}
 </style>
+<style>
+#boardLbl{font-size:12px;color:var(--muted);border:1px dashed var(--panel-b);border-radius:6px;padding:3px 8px;flex:none}
+#status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:middle}
+#status.live .dot{background:var(--ok)}
+#status.err .dot{background:#d9574a}
+</style>
+<script src="firebase-config.js"></script>
 </head>
 <body>
 <div id="bar">
   <h1>🧭 Whiteboard</h1>
+  <span id="boardLbl" title="Aktuelles Board"></span>
   <button class="btn add" data-t="idee" title="Idee hinzufügen (Rechtsklick: ein-/ausblenden)">💡 Idee <span class="n"></span></button>
   <button class="btn add" data-t="ziel" title="Ziel hinzufügen (Rechtsklick: ein-/ausblenden)">🎯 Ziel <span class="n"></span></button>
   <button class="btn add" data-t="schritt" title="Schritt hinzufügen (Rechtsklick: ein-/ausblenden)">➜ Schritt <span class="n"></span></button>
@@ -107,6 +115,8 @@ button{font:inherit;color:inherit;cursor:pointer}
   <button class="btn" id="zIn" title="Vergrößern">+</button>
   <button class="btn" id="fit" title="Alles anzeigen">⤢ Alles</button>
   <span class="sp"></span>
+  <button class="btn" id="share" title="Link zu diesem Board kopieren">🔗 Teilen</button>
+  <button class="btn" id="switch" title="Anderes Board öffnen oder neues anlegen">🗂 Board</button>
   <button class="btn" id="exp" title="Board als JSON-Datei sichern">⬇ Export</button>
   <button class="btn" id="imp" title="Board aus JSON-Datei laden">⬆ Import</button>
   <button class="btn" id="clr" title="Board leeren">🗑</button>
@@ -117,84 +127,122 @@ button{font:inherit;color:inherit;cursor:pointer}
   <div id="world"><svg id="links"></svg></div>
 </div>
 <div id="hint"></div>
-<div id="status"></div>
+<div id="status"><span class="dot"></span><span class="txt">Lade…</span></div>
 
 <script>
 const TYPES={
-  idee:{label:'Idee',icon:'💡'},
-  ziel:{label:'Ziel',icon:'🎯'},
-  schritt:{label:'Schritt',icon:'➜'},
-  checkpoint:{label:'Checkpoint',icon:'🚩'},
-  notiz:{label:'Notiz',icon:'📝'}
+  idee:{label:'Idee',icon:'💡'}, ziel:{label:'Ziel',icon:'🎯'}, schritt:{label:'Schritt',icon:'➜'},
+  checkpoint:{label:'Checkpoint',icon:'🚩'}, notiz:{label:'Notiz',icon:'📝'}
 };
 const CHECKABLE=t=>t==='schritt'||t==='checkpoint';
-const KEY='whiteboard-v1';
+const CFG=(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.projectId)?window.FIREBASE_CONFIG:null;
+const BOARD=((new URLSearchParams(location.search).get('board')||'haupt').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,40))||'haupt';
+const KEY='whiteboard-v1:'+BOARD;
 const vp=document.getElementById('vp'), world=document.getElementById('world'), svg=document.getElementById('links');
 const hintEl=document.getElementById('hint'), statusEl=document.getElementById('status');
-const uid=()=>Math.random().toString(36).slice(2,10);
-let S=load()||seed();
-S.hidden=S.hidden||{}; S.view=S.view||{x:40,y:40,z:1};
-let connectFrom=null, zTop=1;
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const clean=o=>JSON.parse(JSON.stringify(o));
+const S={cards:[],links:[]};
+const EL=new Map();
+let V=loadLS(KEY+':view')||{x:40,y:40,z:1}, HID=loadLS(KEY+':hidden')||{};
+let FB=null, connectFrom=null, zTop=1, dragging=null;
+document.getElementById('boardLbl').textContent='Board: '+BOARD;
 
-/* ---------- Speichern ---------- */
-function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){return null}}
-let saveT;
-function save(){
-  clearTimeout(saveT);
-  saveT=setTimeout(()=>{
-    try{localStorage.setItem(KEY,JSON.stringify(S));statusEl.textContent='Automatisch gespeichert'}
-    catch(e){statusEl.textContent='Speichern nicht möglich – bitte exportieren'}
-  },300);
+/* ---------- Speicher ---------- */
+function loadLS(k){try{const r=localStorage.getItem(k);return r?JSON.parse(r):null}catch(e){return null}}
+function saveLS(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+let tLocal,tView;
+function saveLocal(){clearTimeout(tLocal);tLocal=setTimeout(()=>{saveLS(KEY,{cards:S.cards,links:S.links})||setStatus('err','Speichern nicht möglich – bitte exportieren')},300)}
+function saveView(){clearTimeout(tView);tView=setTimeout(()=>{saveLS(KEY+':view',V);saveLS(KEY+':hidden',HID)},300)}
+function setStatus(kind,txt){statusEl.className=kind||'';statusEl.querySelector('.txt').textContent=txt}
+
+const timers={};
+function persistCard(c,delay=400){
+  if(!FB)return saveLocal();
+  clearTimeout(timers[c.id]);
+  timers[c.id]=setTimeout(()=>{delete timers[c.id];
+    FB.fs.setDoc(FB.fs.doc(FB.db,'boards',BOARD,'cards',c.id),clean(c)).catch(onErr)},delay);
 }
-function seed(){
+function removeCardP(id,linkIds){
+  if(!FB)return saveLocal();
+  clearTimeout(timers[id]); delete timers[id];
+  const b=FB.fs.writeBatch(FB.db);
+  b.delete(FB.fs.doc(FB.db,'boards',BOARD,'cards',id));
+  linkIds.forEach(l=>b.delete(FB.fs.doc(FB.db,'boards',BOARD,'links',l)));
+  b.commit().catch(onErr);
+}
+function persistLink(l){if(!FB)return saveLocal();FB.fs.setDoc(FB.fs.doc(FB.db,'boards',BOARD,'links',l.id),clean(l)).catch(onErr)}
+function removeLinkP(id){if(!FB)return saveLocal();FB.fs.deleteDoc(FB.fs.doc(FB.db,'boards',BOARD,'links',id)).catch(onErr)}
+async function replaceAll(cards,links){
+  const old={cards:S.cards.map(c=>c.id),links:S.links.map(l=>l.id)};
+  S.cards=cards; S.links=links; mountAll();
+  if(!FB)return saveLocal();
+  const {fs,db}=FB; let b=fs.writeBatch(db),n=0;
+  const step=async op=>{op(b);if(++n>=450){await b.commit();b=fs.writeBatch(db);n=0}};
+  for(const id of old.cards) await step(x=>x.delete(fs.doc(db,'boards',BOARD,'cards',id)));
+  for(const id of old.links) await step(x=>x.delete(fs.doc(db,'boards',BOARD,'links',id)));
+  for(const c of cards) await step(x=>x.set(fs.doc(db,'boards',BOARD,'cards',c.id),clean(c)));
+  for(const l of links) await step(x=>x.set(fs.doc(db,'boards',BOARD,'links',l.id),clean(l)));
+  await b.commit().catch(onErr);
+}
+function onErr(e){console.error(e);setStatus('err','Sync-Fehler: '+(e.code||e.message||e))}
+
+function seedData(){
   const g={id:uid(),type:'ziel',x:520,y:150,title:'Erste App-Version veröffentlichen',body:'Was soll die App am Ende können?'};
   const s1={id:uid(),type:'schritt',x:80,y:40,title:'Kernfunktionen festlegen',body:'Welche 3 Features sind ein Muss?',done:true};
-  const s2={id:uid(),type:'schritt',x:80,y:220,title:'Klickbaren Prototyp bauen',body:''};
-  const c1={id:uid(),type:'checkpoint',x:80,y:390,title:'Feedback von 5 Testern',body:''};
+  const s2={id:uid(),type:'schritt',x:80,y:220,title:'Klickbaren Prototyp bauen',body:'',done:false};
+  const c1={id:uid(),type:'checkpoint',x:80,y:390,title:'Feedback von 5 Testern',body:'',done:false};
   const i1={id:uid(),type:'idee',x:540,y:420,title:'Offline-Modus?',body:'Später prüfen'};
   const n1={id:uid(),type:'notiz',x:900,y:110,title:'So funktioniert’s',
-    body:'• Oben Karten hinzufügen\n• Am Kopf einer Karte ziehen\n• ⤳ verbindet Karten (z. B. Schritt → Ziel)\n• Abgehakte Schritte füllen den Fortschritt des Ziels\n• Doppelklick auf freie Fläche = neue Notiz\n• Freie Fläche ziehen = verschieben\n• Strg/⌘ + Mausrad = Zoom\n• Linie anklicken = Verbindung löschen\n• Rechtsklick auf Typ-Button = ein-/ausblenden'};
+    body:'• Oben Karten hinzufügen\n• Am Kopf einer Karte ziehen\n• ⤳ verbindet Karten (z. B. Schritt → Ziel)\n• Abgehakte Schritte füllen den Fortschritt des Ziels\n• Doppelklick auf freie Fläche = neue Notiz\n• Freie Fläche ziehen = verschieben\n• Strg/⌘ + Mausrad = Zoom\n• Linie anklicken = Verbindung löschen\n• Rechtsklick auf Typ-Button = ein-/ausblenden\n• 🔗 Teilen kopiert den Link – alle sehen Änderungen live'};
   return {cards:[g,s1,s2,c1,i1,n1],
-    links:[{id:uid(),from:s1.id,to:g.id},{id:uid(),from:s2.id,to:g.id},{id:uid(),from:c1.id,to:g.id},{id:uid(),from:i1.id,to:g.id}],
-    view:{x:40,y:40,z:1},hidden:{}};
+    links:[{id:uid(),from:s1.id,to:g.id},{id:uid(),from:s2.id,to:g.id},{id:uid(),from:c1.id,to:g.id},{id:uid(),from:i1.id,to:g.id}]};
 }
 
 /* ---------- Ansicht ---------- */
 function applyView(){
-  const v=S.view;
-  world.style.transform=`translate(${v.x}px,${v.y}px) scale(${v.z})`;
-  vp.style.backgroundSize=`${24*v.z}px ${24*v.z}px`;
-  vp.style.backgroundPosition=`${v.x}px ${v.y}px`;
-  document.getElementById('zoomLbl').textContent=Math.round(v.z*100)+'%';
+  world.style.transform=`translate(${V.x}px,${V.y}px) scale(${V.z})`;
+  vp.style.backgroundSize=`${24*V.z}px ${24*V.z}px`;
+  vp.style.backgroundPosition=`${V.x}px ${V.y}px`;
+  document.getElementById('zoomLbl').textContent=Math.round(V.z*100)+'%';
 }
 function zoomAt(px,py,nz){
-  const v=S.view; nz=Math.min(2.5,Math.max(.2,nz));
-  const wx=(px-v.x)/v.z, wy=(py-v.y)/v.z;
-  v.z=nz; v.x=px-wx*nz; v.y=py-wy*nz; applyView(); save();
+  nz=Math.min(2.5,Math.max(.2,nz));
+  const wx=(px-V.x)/V.z, wy=(py-V.y)/V.z;
+  V.z=nz; V.x=px-wx*nz; V.y=py-wy*nz; applyView(); saveView();
 }
 function vpCenter(){const r=vp.getBoundingClientRect();return{x:r.width/2,y:r.height/2}}
-function toWorld(px,py){const v=S.view;return{x:(px-v.x)/v.z,y:(py-v.y)/v.z}}
+function toWorld(px,py){return{x:(px-V.x)/V.z,y:(py-V.y)/V.z}}
 function fitAll(){
-  const els=[...world.querySelectorAll('.card:not(.hidden)')]; if(!els.length)return;
+  const vis=S.cards.filter(c=>!HID[c.type]&&EL.get(c.id)); if(!vis.length)return;
   let x1=1e9,y1=1e9,x2=-1e9,y2=-1e9;
-  for(const e of els){const c=card(e.dataset.id);x1=Math.min(x1,c.x);y1=Math.min(y1,c.y);x2=Math.max(x2,c.x+e.offsetWidth);y2=Math.max(y2,c.y+e.offsetHeight)}
+  for(const c of vis){const e=EL.get(c.id);x1=Math.min(x1,c.x);y1=Math.min(y1,c.y);x2=Math.max(x2,c.x+e.offsetWidth);y2=Math.max(y2,c.y+e.offsetHeight)}
   const r=vp.getBoundingClientRect(), pad=40;
   const z=Math.min(1.5,Math.max(.2,Math.min((r.width-pad*2)/(x2-x1),(r.height-pad*2)/(y2-y1))));
-  S.view={z,x:(r.width-(x2-x1)*z)/2-x1*z,y:(r.height-(y2-y1)*z)/2-y1*z};
-  applyView(); save();
+  V={z,x:(r.width-(x2-x1)*z)/2-x1*z,y:(r.height-(y2-y1)*z)/2-y1*z};
+  applyView(); saveView();
 }
 
 /* ---------- Karten ---------- */
 const card=id=>S.cards.find(c=>c.id===id);
-function render(){
-  world.querySelectorAll('.card').forEach(n=>n.remove());
-  for(const c of S.cards) world.appendChild(cardEl(c));
-  applyView(); updateProgress(); drawLinks(); updateCounts();
+function mountAll(){EL.forEach(e=>e.remove());EL.clear();S.cards.forEach(mount);applyView();refresh()}
+function mount(c){const el=cardEl(c);EL.set(c.id,el);world.appendChild(el)}
+function unmount(id){EL.get(id)?.remove();EL.delete(id)}
+function refresh(){updateProgress();drawLinks();updateCounts()}
+function syncEl(c){
+  const el=EL.get(c.id); if(!el)return mount(c);
+  el.style.left=c.x+'px'; el.style.top=c.y+'px';
+  el.classList.toggle('done',!!c.done);
+  const cb=el.querySelector('.chk input'); if(cb)cb.checked=!!c.done;
+  for(const k of ['title','body']){
+    const n=el.querySelector('.'+k);
+    if(document.activeElement!==n&&n.innerText!==(c[k]||''))n.textContent=c[k]||'';
+  }
 }
 function cardEl(c){
   const t=TYPES[c.type]||TYPES.notiz;
   const el=document.createElement('div');
-  el.className=`card t-${c.type}${c.done?' done':''}${S.hidden[c.type]?' hidden':''}`;
+  el.className=`card t-${c.type}${c.done?' done':''}${HID[c.type]?' hidden':''}`;
   el.dataset.id=c.id; el.style.left=c.x+'px'; el.style.top=c.y+'px';
   el.innerHTML=`<div class="head"><span class="tag">${t.icon} ${t.label}</span>
     ${CHECKABLE(c.type)?`<label class="chk" title="Erledigt"><input type="checkbox"${c.done?' checked':''}></label>`:''}
@@ -207,17 +255,18 @@ function cardEl(c){
   const ti=el.querySelector('.title'), bo=el.querySelector('.body');
   ti.textContent=c.title||''; bo.textContent=c.body||'';
   for(const [node,key] of [[ti,'title'],[bo,'body']]){
-    node.addEventListener('input',()=>{c[key]=node.innerText;save();drawLinks()});
-    node.addEventListener('blur',()=>{if(!node.innerText.trim()){node.textContent='';c[key]=''}});
+    node.addEventListener('input',()=>{c[key]=node.innerText;persistCard(c,600);drawLinks()});
+    node.addEventListener('blur',()=>{if(!node.innerText.trim()&&node.textContent){node.textContent='';c[key]='';persistCard(c,0)}});
     node.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData||window.clipboardData).getData('text'))});
     node.addEventListener('keydown',e=>{if(e.key==='Escape')node.blur(); if(key==='title'&&e.key==='Enter'){e.preventDefault();bo.focus()}});
   }
   const cb=el.querySelector('.chk input');
-  if(cb) cb.addEventListener('change',()=>{c.done=cb.checked;el.classList.toggle('done',c.done);updateProgress();drawLinks();save()});
+  if(cb) cb.addEventListener('change',()=>{c.done=cb.checked;el.classList.toggle('done',c.done);refresh();persistCard(c,0)});
   el.querySelector('.del').addEventListener('click',()=>{
     if((c.title||c.body)&&!confirm(`„${c.title||t.label}“ löschen?`))return;
-    S.cards=S.cards.filter(x=>x.id!==c.id); S.links=S.links.filter(l=>l.from!==c.id&&l.to!==c.id);
-    if(connectFrom===c.id)stopConnect(); render(); save();
+    const lk=S.links.filter(l=>l.from===c.id||l.to===c.id).map(l=>l.id);
+    S.cards=S.cards.filter(x=>x.id!==c.id); S.links=S.links.filter(l=>!lk.includes(l.id));
+    if(connectFrom===c.id)stopConnect(); unmount(c.id); refresh(); removeCardP(c.id,lk);
   });
   el.querySelector('.link').addEventListener('click',e=>{e.stopPropagation(); connectFrom===c.id?stopConnect():startConnect(c.id)});
   el.addEventListener('pointerdown',e=>{
@@ -229,34 +278,32 @@ function cardEl(c){
   return el;
 }
 function addCard(type,pos){
-  if(S.hidden[type]){S.hidden[type]=false}
+  if(HID[type]){HID[type]=false;saveView();EL.forEach((e,id)=>e.classList.toggle('hidden',!!HID[card(id)?.type]))}
   if(!pos){const m=vpCenter(),w=toWorld(m.x,m.y);pos={x:w.x-115+(Math.random()*60-30),y:w.y-60+(Math.random()*60-30)}}
   const c={id:uid(),type,x:Math.round(pos.x),y:Math.round(pos.y),title:'',body:''};
   if(CHECKABLE(type))c.done=false;
-  S.cards.push(c); render(); save();
-  const el=world.querySelector(`[data-id="${c.id}"]`); el.style.zIndex=++zTop; el.querySelector('.title').focus();
+  S.cards.push(c); mount(c); refresh(); persistCard(c,0);
+  const el=EL.get(c.id); el.style.zIndex=++zTop; el.querySelector('.title').focus();
 }
 function dragCard(e,c,el){
-  const sx=e.clientX,sy=e.clientY,ox=c.x,oy=c.y; el.setPointerCapture(e.pointerId);
-  const mv=ev=>{c.x=Math.round(ox+(ev.clientX-sx)/S.view.z);c.y=Math.round(oy+(ev.clientY-sy)/S.view.z);el.style.left=c.x+'px';el.style.top=c.y+'px';drawLinks()};
-  const up=()=>{el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up);save()};
+  const sx=e.clientX,sy=e.clientY,ox=c.x,oy=c.y; el.setPointerCapture(e.pointerId); dragging=c.id;
+  const mv=ev=>{c.x=Math.round(ox+(ev.clientX-sx)/V.z);c.y=Math.round(oy+(ev.clientY-sy)/V.z);el.style.left=c.x+'px';el.style.top=c.y+'px';drawLinks()};
+  const up=()=>{el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up);
+    dragging=null; if(c.x!==ox||c.y!==oy)persistCard(c,0)};
   el.addEventListener('pointermove',mv);el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
 }
 
 /* ---------- Verbindungen ---------- */
 function startConnect(id){
   stopConnect(); connectFrom=id; vp.classList.add('connecting');
-  world.querySelector(`[data-id="${id}"]`)?.classList.add('src');
+  EL.get(id)?.classList.add('src');
   showHint('Jetzt die Zielkarte anklicken · Esc zum Abbrechen');
 }
-function stopConnect(){
-  connectFrom=null; vp.classList.remove('connecting');
-  world.querySelectorAll('.src').forEach(n=>n.classList.remove('src')); showHint('');
-}
+function stopConnect(){connectFrom=null;vp.classList.remove('connecting');world.querySelectorAll('.src').forEach(n=>n.classList.remove('src'));showHint('')}
 function addLink(a,b){
   const exists=S.links.some(l=>(l.from===a&&l.to===b)||(l.from===b&&l.to===a));
-  if(!exists)S.links.push({id:uid(),from:a,to:b});
-  stopConnect(); updateProgress(); drawLinks(); save();
+  if(!exists){const l={id:uid(),from:a,to:b};S.links.push(l);persistLink(l)}
+  stopConnect(); refresh();
 }
 function edge(c,r,t){
   const dx=t.x-c.x,dy=t.y-c.y; if(!dx&&!dy)return c;
@@ -264,11 +311,10 @@ function edge(c,r,t){
   return{x:c.x+dx*k,y:c.y+dy*k};
 }
 function drawLinks(){
-  const els={}; world.querySelectorAll('.card').forEach(n=>els[n.dataset.id]=n);
   let h=`<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--line)"/></marker>
   <marker id="arOk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--ok)"/></marker></defs>`;
   for(const l of S.links){
-    const a=card(l.from),b=card(l.to),ea=els[l.from],eb=els[l.to];
+    const a=card(l.from),b=card(l.to),ea=EL.get(l.from),eb=EL.get(l.to);
     if(!a||!b||!ea||!eb||ea.classList.contains('hidden')||eb.classList.contains('hidden'))continue;
     const ra={w:ea.offsetWidth,h:ea.offsetHeight},rb={w:eb.offsetWidth,h:eb.offsetHeight};
     const ca={x:a.x+ra.w/2,y:a.y+ra.h/2},cb={x:b.x+rb.w/2,y:b.y+rb.h/2};
@@ -280,12 +326,12 @@ function drawLinks(){
 }
 svg.addEventListener('pointerdown',e=>{
   const g=e.target.closest('.lk'); if(!g)return; e.stopPropagation();
-  if(confirm('Verbindung löschen?')){S.links=S.links.filter(l=>l.id!==g.dataset.id);updateProgress();drawLinks();save()}
+  if(confirm('Verbindung löschen?')){S.links=S.links.filter(l=>l.id!==g.dataset.id);refresh();removeLinkP(g.dataset.id)}
 });
 function updateProgress(){
   for(const c of S.cards){
     if(c.type!=='ziel')continue;
-    const el=world.querySelector(`[data-id="${c.id}"]`); if(!el)continue;
+    const el=EL.get(c.id); if(!el)continue;
     const src=S.links.filter(l=>l.to===c.id).map(l=>card(l.from)).filter(x=>x&&CHECKABLE(x.type));
     const done=src.filter(x=>x.done).length, pct=src.length?Math.round(done/src.length*100):0;
     el.querySelector('.bar i').style.width=pct+'%';
@@ -295,7 +341,7 @@ function updateProgress(){
 function updateCounts(){
   document.querySelectorAll('.add').forEach(b=>{
     const t=b.dataset.t; b.querySelector('.n').textContent=S.cards.filter(c=>c.type===t).length||'';
-    b.classList.toggle('off',!!S.hidden[t]);
+    b.classList.toggle('off',!!HID[t]);
   });
 }
 function showHint(t){hintEl.textContent=t;hintEl.classList.toggle('show',!!t)}
@@ -308,22 +354,22 @@ vp.addEventListener('pointerdown',e=>{
   if(connectFrom){stopConnect();return}
   if(document.activeElement&&document.activeElement.isContentEditable)document.activeElement.blur();
   vp.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(ptrs.size===1){pan={sx:e.clientX,sy:e.clientY,vx:S.view.x,vy:S.view.y};vp.classList.add('panning')}
-  if(ptrs.size===2){pan=null;const [p,q]=[...ptrs.values()];pinch={d:Math.hypot(p.x-q.x,p.y-q.y),z:S.view.z}}
+  if(ptrs.size===1){pan={sx:e.clientX,sy:e.clientY,vx:V.x,vy:V.y};vp.classList.add('panning')}
+  if(ptrs.size===2){pan=null;const [p,q]=[...ptrs.values()];pinch={d:Math.hypot(p.x-q.x,p.y-q.y),z:V.z}}
 });
 vp.addEventListener('pointermove',e=>{
   if(!ptrs.has(e.pointerId))return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(pinch&&ptrs.size===2){
     const [p,q]=[...ptrs.values()],r=vp.getBoundingClientRect();
     zoomAt((p.x+q.x)/2-r.left,(p.y+q.y)/2-r.top,pinch.z*Math.hypot(p.x-q.x,p.y-q.y)/pinch.d);
-  }else if(pan){S.view.x=pan.vx+e.clientX-pan.sx;S.view.y=pan.vy+e.clientY-pan.sy;applyView()}
+  }else if(pan){V.x=pan.vx+e.clientX-pan.sx;V.y=pan.vy+e.clientY-pan.sy;applyView()}
 });
-const endPtr=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=null;if(!ptrs.size){if(pan)save();pan=null;vp.classList.remove('panning')}};
+const endPtr=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=null;if(!ptrs.size){if(pan)saveView();pan=null;vp.classList.remove('panning')}};
 vp.addEventListener('pointerup',endPtr);vp.addEventListener('pointercancel',endPtr);
 vp.addEventListener('wheel',e=>{
   e.preventDefault(); const r=vp.getBoundingClientRect();
-  if(e.ctrlKey||e.metaKey)zoomAt(e.clientX-r.left,e.clientY-r.top,S.view.z*Math.exp(-e.deltaY*.0025));
-  else{S.view.x-=e.deltaX;S.view.y-=e.deltaY;applyView();save()}
+  if(e.ctrlKey||e.metaKey)zoomAt(e.clientX-r.left,e.clientY-r.top,V.z*Math.exp(-e.deltaY*.0025));
+  else{V.x-=e.deltaX;V.y-=e.deltaY;applyView();saveView()}
 },{passive:false});
 vp.addEventListener('dblclick',e=>{
   if(!isBg(e.target))return; const r=vp.getBoundingClientRect(),w=toWorld(e.clientX-r.left,e.clientY-r.top);
@@ -334,34 +380,87 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&connectFrom)stopCon
 /* ---------- Toolbar ---------- */
 document.querySelectorAll('.add').forEach(b=>{
   b.addEventListener('click',()=>addCard(b.dataset.t));
-  b.addEventListener('contextmenu',e=>{e.preventDefault();const t=b.dataset.t;S.hidden[t]=!S.hidden[t];render();save()});
+  b.addEventListener('contextmenu',e=>{e.preventDefault();const t=b.dataset.t;HID[t]=!HID[t];saveView();
+    EL.forEach((el,id)=>el.classList.toggle('hidden',!!HID[card(id)?.type]));refresh()});
 });
-document.getElementById('zIn').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,S.view.z*1.2)};
-document.getElementById('zOut').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,S.view.z/1.2)};
+document.getElementById('zIn').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,V.z*1.2)};
+document.getElementById('zOut').onclick=()=>{const m=vpCenter();zoomAt(m.x,m.y,V.z/1.2)};
 document.getElementById('fit').onclick=fitAll;
+document.getElementById('share').onclick=async()=>{
+  const u=new URL(location.href); u.search='?board='+encodeURIComponent(BOARD); u.hash='';
+  try{await navigator.clipboard.writeText(u.href);showHint('Link kopiert – an dein Team schicken');setTimeout(()=>showHint(''),2500)}
+  catch(e){prompt('Link zu diesem Board:',u.href)}
+};
+document.getElementById('switch').onclick=()=>{
+  const n=prompt('Name des Boards (vorhandenes öffnen oder neues anlegen):',BOARD); if(!n)return;
+  const u=new URL(location.href); u.search='?board='+encodeURIComponent(n.trim()); u.hash=''; location.href=u.href;
+};
 document.getElementById('exp').onclick=()=>{
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,2)],{type:'application/json'}));
-  a.download=`whiteboard-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href);
+  a.href=URL.createObjectURL(new Blob([JSON.stringify({board:BOARD,cards:S.cards,links:S.links},null,2)],{type:'application/json'}));
+  a.download=`whiteboard-${BOARD}-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href);
 };
 const fileIn=document.getElementById('file');
 document.getElementById('imp').onclick=()=>fileIn.click();
 fileIn.onchange=async()=>{
   const f=fileIn.files[0]; fileIn.value=''; if(!f)return;
-  try{
-    const d=JSON.parse(await f.text());
-    if(!Array.isArray(d.cards)||!Array.isArray(d.links))throw 0;
-    if(!confirm('Aktuelles Board durch die importierte Datei ersetzen?'))return;
-    S={cards:d.cards,links:d.links,view:d.view||{x:40,y:40,z:1},hidden:d.hidden||{}}; render(); save(); fitAll();
-  }catch(e){alert('Die Datei ist kein gültiger Whiteboard-Export.')}
+  let d; try{d=JSON.parse(await f.text());if(!Array.isArray(d.cards)||!Array.isArray(d.links))throw 0}
+  catch(e){return alert('Die Datei ist kein gültiger Whiteboard-Export.')}
+  if(!confirm(`Board „${BOARD}“ für alle durch die importierte Datei ersetzen?`))return;
+  await replaceAll(d.cards.filter(c=>c&&c.id&&TYPES[c.type]),d.links.filter(l=>l&&l.id&&l.from&&l.to)); fitAll();
 };
 document.getElementById('clr').onclick=()=>{
-  if(!confirm('Wirklich alle Karten löschen? (Tipp: vorher exportieren)'))return;
-  S={cards:[],links:[],view:{x:40,y:40,z:1},hidden:{}}; render(); save();
+  if(!confirm(`Wirklich alle Karten in „${BOARD}“ löschen – auch für alle anderen? (Tipp: vorher exportieren)`))return;
+  replaceAll([],[]);
 };
 window.addEventListener('resize',drawLinks);
 
-render();
+/* ---------- Start ---------- */
+function startLocal(note){
+  const d=loadLS(KEY)||loadLS('whiteboard-v1')||seedData();
+  S.cards=d.cards||[]; S.links=d.links||[]; mountAll(); saveLocal();
+  setStatus(note?'err':'',note||'Nur lokal gespeichert (Firebase nicht eingerichtet)');
+}
+async function startCloud(){
+  setStatus('','Verbinde mit gemeinsamem Speicher…');
+  const v='10.12.2', base=`https://www.gstatic.com/firebasejs/${v}/`;
+  const [appM,authM,fs]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
+  const app=appM.initializeApp(CFG);
+  await authM.signInAnonymously(authM.getAuth(app));
+  const db=fs.getFirestore(app);
+  FB={fs,db};
+  const meta=fs.doc(db,'boards',BOARD);
+  if(!(await fs.getDoc(meta)).exists()){
+    const s=seedData(), b=fs.writeBatch(db);
+    b.set(meta,{created:fs.serverTimestamp()});
+    s.cards.forEach(c=>b.set(fs.doc(db,'boards',BOARD,'cards',c.id),c));
+    s.links.forEach(l=>b.set(fs.doc(db,'boards',BOARD,'links',l.id),l));
+    await b.commit();
+  }
+  applyView();
+  fs.onSnapshot(fs.collection(db,'boards',BOARD,'cards'),snap=>{
+    for(const ch of snap.docChanges()){
+      const id=ch.doc.id, d=ch.doc.data(), c=card(id);
+      if(ch.type==='removed'){S.cards=S.cards.filter(x=>x.id!==id);unmount(id);continue}
+      if(!c){const n={...d,id};S.cards.push(n);mount(n);continue}
+      if(ch.doc.metadata.hasPendingWrites||timers[id]||dragging===id)continue;
+      for(const k of Object.keys(c))if(k!=='id'&&!(k in d))delete c[k];
+      Object.assign(c,d,{id}); syncEl(c);
+    }
+    refresh(); setStatus('live','Live – gemeinsames Board „'+BOARD+'“');
+  },onErr);
+  fs.onSnapshot(fs.collection(db,'boards',BOARD,'links'),snap=>{
+    for(const ch of snap.docChanges()){
+      const id=ch.doc.id;
+      if(ch.type==='removed'){S.links=S.links.filter(l=>l.id!==id);continue}
+      if(!S.links.some(l=>l.id===id))S.links.push({...ch.doc.data(),id});
+    }
+    refresh();
+  },onErr);
+}
+applyView();
+if(CFG) startCloud().catch(e=>{console.error(e);FB=null;startLocal('Keine Verbindung zum gemeinsamen Speicher ('+(e.code||e.message)+') – arbeite nur lokal')});
+else startLocal();
 </script>
 </body>
 </html>
