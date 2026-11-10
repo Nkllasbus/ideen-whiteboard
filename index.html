@@ -157,33 +157,26 @@ function saveView(){clearTimeout(tView);tView=setTimeout(()=>{saveLS(KEY+':view'
 function setStatus(kind,txt){statusEl.className=kind||'';statusEl.querySelector('.txt').textContent=txt}
 
 const timers={};
+const P=(...s)=>FB.fs.ref(FB.db,['boards',BOARD,...s].join('/'));
 function persistCard(c,delay=400){
   if(!FB)return saveLocal();
   clearTimeout(timers[c.id]);
-  timers[c.id]=setTimeout(()=>{delete timers[c.id];
-    FB.fs.setDoc(FB.fs.doc(FB.db,'boards',BOARD,'cards',c.id),clean(c)).catch(onErr)},delay);
+  timers[c.id]=setTimeout(()=>{delete timers[c.id];FB.fs.set(P('cards',c.id),clean(c)).catch(onErr)},delay);
 }
 function removeCardP(id,linkIds){
   if(!FB)return saveLocal();
   clearTimeout(timers[id]); delete timers[id];
-  const b=FB.fs.writeBatch(FB.db);
-  b.delete(FB.fs.doc(FB.db,'boards',BOARD,'cards',id));
-  linkIds.forEach(l=>b.delete(FB.fs.doc(FB.db,'boards',BOARD,'links',l)));
-  b.commit().catch(onErr);
+  const u={['cards/'+id]:null}; linkIds.forEach(l=>u['links/'+l]=null);
+  FB.fs.update(P(),u).catch(onErr);
 }
-function persistLink(l){if(!FB)return saveLocal();FB.fs.setDoc(FB.fs.doc(FB.db,'boards',BOARD,'links',l.id),clean(l)).catch(onErr)}
-function removeLinkP(id){if(!FB)return saveLocal();FB.fs.deleteDoc(FB.fs.doc(FB.db,'boards',BOARD,'links',id)).catch(onErr)}
+function persistLink(l){if(!FB)return saveLocal();FB.fs.set(P('links',l.id),clean(l)).catch(onErr)}
+function removeLinkP(id){if(!FB)return saveLocal();FB.fs.remove(P('links',id)).catch(onErr)}
+const toMap=a=>Object.fromEntries(a.map(x=>[x.id,clean(x)]));
 async function replaceAll(cards,links){
-  const old={cards:S.cards.map(c=>c.id),links:S.links.map(l=>l.id)};
   S.cards=cards; S.links=links; mountAll();
   if(!FB)return saveLocal();
-  const {fs,db}=FB; let b=fs.writeBatch(db),n=0;
-  const step=async op=>{op(b);if(++n>=450){await b.commit();b=fs.writeBatch(db);n=0}};
-  for(const id of old.cards) await step(x=>x.delete(fs.doc(db,'boards',BOARD,'cards',id)));
-  for(const id of old.links) await step(x=>x.delete(fs.doc(db,'boards',BOARD,'links',id)));
-  for(const c of cards) await step(x=>x.set(fs.doc(db,'boards',BOARD,'cards',c.id),clean(c)));
-  for(const l of links) await step(x=>x.set(fs.doc(db,'boards',BOARD,'links',l.id),clean(l)));
-  await b.commit().catch(onErr);
+  Object.keys(timers).forEach(k=>{clearTimeout(timers[k]);delete timers[k]});
+  await FB.fs.set(P(),{meta:{created:Date.now()},cards:toMap(cards),links:toMap(links)}).catch(onErr);
 }
 function onErr(e){console.error(e);setStatus('err','Sync-Fehler: '+(e.code||e.message||e))}
 
@@ -424,39 +417,30 @@ function startLocal(note){
 async function startCloud(){
   setStatus('','Verbinde mit gemeinsamem Speicher…');
   const v='10.12.2', base=`https://www.gstatic.com/firebasejs/${v}/`;
-  const [appM,authM,fs]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
+  const [appM,authM,fs]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-database.js')]);
   const app=appM.initializeApp(CFG);
   await authM.signInAnonymously(authM.getAuth(app));
-  const db=fs.getFirestore(app);
+  const db=fs.getDatabase(app);
   FB={fs,db};
-  const meta=fs.doc(db,'boards',BOARD);
-  if(!(await fs.getDoc(meta)).exists()){
-    const s=seedData(), b=fs.writeBatch(db);
-    b.set(meta,{created:fs.serverTimestamp()});
-    s.cards.forEach(c=>b.set(fs.doc(db,'boards',BOARD,'cards',c.id),c));
-    s.links.forEach(l=>b.set(fs.doc(db,'boards',BOARD,'links',l.id),l));
-    await b.commit();
+  if(!(await fs.get(P('meta'))).exists()){
+    const s=seedData();
+    await fs.set(P(),{meta:{created:Date.now()},cards:toMap(s.cards),links:toMap(s.links)});
   }
   applyView();
-  fs.onSnapshot(fs.collection(db,'boards',BOARD,'cards'),snap=>{
-    for(const ch of snap.docChanges()){
-      const id=ch.doc.id, d=ch.doc.data(), c=card(id);
-      if(ch.type==='removed'){S.cards=S.cards.filter(x=>x.id!==id);unmount(id);continue}
-      if(!c){const n={...d,id};S.cards.push(n);mount(n);continue}
-      if(ch.doc.metadata.hasPendingWrites||timers[id]||dragging===id)continue;
-      for(const k of Object.keys(c))if(k!=='id'&&!(k in d))delete c[k];
-      Object.assign(c,d,{id}); syncEl(c);
-    }
-    refresh(); setStatus('live','Live – gemeinsames Board „'+BOARD+'“');
-  },onErr);
-  fs.onSnapshot(fs.collection(db,'boards',BOARD,'links'),snap=>{
-    for(const ch of snap.docChanges()){
-      const id=ch.doc.id;
-      if(ch.type==='removed'){S.links=S.links.filter(l=>l.id!==id);continue}
-      if(!S.links.some(l=>l.id===id))S.links.push({...ch.doc.data(),id});
-    }
-    refresh();
-  },onErr);
+  const cards=P('cards'), links=P('links');
+  const upsert=snap=>{
+    const id=snap.key, d=snap.val()||{}, c=card(id);
+    if(!c){const n={...d,id};S.cards.push(n);mount(n);return refresh()}
+    if(timers[id]||dragging===id)return;
+    for(const k of Object.keys(c))if(k!=='id'&&!(k in d))delete c[k];
+    Object.assign(c,d,{id}); syncEl(c); refresh();
+  };
+  fs.onChildAdded(cards,upsert,onErr);
+  fs.onChildChanged(cards,upsert,onErr);
+  fs.onChildRemoved(cards,snap=>{S.cards=S.cards.filter(x=>x.id!==snap.key);unmount(snap.key);refresh()},onErr);
+  fs.onChildAdded(links,snap=>{if(!S.links.some(l=>l.id===snap.key))S.links.push({...snap.val(),id:snap.key});refresh()},onErr);
+  fs.onChildRemoved(links,snap=>{S.links=S.links.filter(l=>l.id!==snap.key);refresh()},onErr);
+  fs.onValue(fs.ref(db,'.info/connected'),s=>s.val()?setStatus('live','Live – gemeinsames Board „'+BOARD+'“'):setStatus('err','Verbindung unterbrochen – Änderungen werden nachgeholt'));
 }
 applyView();
 if(CFG) startCloud().catch(e=>{console.error(e);FB=null;startLocal('Keine Verbindung zum gemeinsamen Speicher ('+(e.code||e.message)+') – arbeite nur lokal')});

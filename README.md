@@ -25,14 +25,14 @@ Ein browserbasiertes Whiteboard, um gemeinsam die Entwicklung unserer App zu pla
 - **🔗 Teilen** kopiert den Link zum aktuellen Board, **🗂 Board** öffnet ein anderes oder legt ein neues an (`?board=name`)
 - **Export/Import** als JSON zum Sichern
 
-## Gemeinsamer Speicher (Firebase) einrichten – einmalig
+## Gemeinsamer Speicher (Firebase Realtime Database) einrichten – einmalig
 
 1. Auf https://console.firebase.google.com ein neues Projekt anlegen (Google Analytics kann aus bleiben).
-2. **Build → Firestore Database → Datenbank erstellen** (Standort z. B. `eur3`, im *Produktionsmodus* starten).
-3. Unter **Firestore → Regeln** den Inhalt von [`firestore.rules`](firestore.rules) einfügen und veröffentlichen.
+2. **Build → Realtime Database → Datenbank erstellen** (Standort z. B. `europe-west1`, im *gesperrten Modus* starten).
+3. Unter **Realtime Database → Regeln** den Inhalt von [`database.rules.json`](database.rules.json) einfügen und veröffentlichen.
 4. **Build → Authentication → Jetzt starten → Anmeldeanbieter „Anonym“** aktivieren.
 5. Unter **Authentication → Einstellungen → Autorisierte Domains** `nkllasbus.github.io` hinzufügen.
-6. **Projekteinstellungen → Meine Apps → Web-App (`</>`)** hinzufügen und das `firebaseConfig`-Objekt in [`firebase-config.js`](firebase-config.js) eintragen.
+6. **Projekteinstellungen → Meine Apps → Web-App (`</>`)** hinzufügen und das `firebaseConfig`-Objekt in [`firebase-config.js`](firebase-config.js) eintragen (inkl. `databaseURL`).
 
 Ohne Konfiguration funktioniert alles weiterhin, aber nur lokal im eigenen Browser.
 
