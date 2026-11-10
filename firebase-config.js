@@ -8,7 +8,15 @@
 // Diese Werte sind nicht geheim – sie dürfen öffentlich im Repo stehen.
 // Geschützt wird der Speicher über die Regeln in database.rules.json.
 
-window.FIREBASE_CONFIG = null;
+window.FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD5w4HVJWCpj6mqDLoRMWNTUQ6WzheQ0m4",
+  authDomain: "whiteboard-22318.firebaseapp.com",
+  databaseURL: "https://whiteboard-22318-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "whiteboard-22318",
+  storageBucket: "whiteboard-22318.firebasestorage.app",
+  messagingSenderId: "554795123883",
+  appId: "1:554795123883:web:080746e2ff93716846a3ee"
+};
 
 /* Beispiel:
 window.FIREBASE_CONFIG = {
